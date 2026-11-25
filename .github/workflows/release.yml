@@ -3,6 +3,9 @@ name: Release
 on:
   push:
     tags: ['v*']
+  # Pull requests that change the packaging build every platform without publishing.
+  pull_request:
+    paths: ['packaging/**', '.github/workflows/release.yml', 'requirements-build.txt']
 
 permissions:
   contents: read
@@ -20,6 +23,8 @@ jobs:
           - os: ubuntu-latest
             name: linux
     runs-on: ${{ matrix.os }}
+    env:
+      LABEL: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'pr' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,6 +32,7 @@ jobs:
           python-version: '3.12'
       - run: pip install -r requirements-build.txt
       - name: Version matches the tag
+        if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
           v=$(python -c "import wheecal; print(wheecal.__version__)")
@@ -37,7 +43,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           WHEECAL_CONFIG="$RUNNER_TEMP/c/config.json" dist/wheecal.app/Contents/MacOS/wheecal --version
-          ditto -c -k --keepParent dist/wheecal.app "wheecal-$GITHUB_REF_NAME-macos.zip"
+          ditto -c -k --keepParent dist/wheecal.app "wheecal-$LABEL-macos.zip"
       - name: Check and package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -45,20 +51,21 @@ jobs:
           $env:WHEECAL_CONFIG = "$env:RUNNER_TEMP\c\config.json"
           dist\wheecal\wheecal-cli.exe --version
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          Compress-Archive -Path dist\wheecal -DestinationPath "wheecal-$env:GITHUB_REF_NAME-windows.zip"
+          Compress-Archive -Path dist\wheecal -DestinationPath "wheecal-$env:LABEL-windows.zip"
       - name: Check and package (Linux)
         if: runner.os == 'Linux'
         run: |
           WHEECAL_CONFIG="$RUNNER_TEMP/c/config.json" dist/wheecal/wheecal --version
-          tar -C dist -czf "wheecal-$GITHUB_REF_NAME-linux.tar.gz" wheecal
+          tar -C dist -czf "wheecal-$LABEL-linux.tar.gz" wheecal
       - uses: actions/upload-artifact@v4
         with:
           name: wheecal-${{ matrix.name }}
-          path: wheecal-${{ github.ref_name }}-*
+          path: wheecal-${{ env.LABEL }}-*
           if-no-files-found: error
 
   release:
     needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
