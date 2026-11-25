@@ -35,7 +35,7 @@ side is shared by every driver.
 
 The LibreCAL is a USB serial device and needs no driver.
 
-**From source** (Python 3.9+ with Tk):
+**From source** (Python 3.10+ with Tk):
 
 ```bash
 git clone https://github.com/CoolNamesAllTaken/wheecal && cd wheecal
