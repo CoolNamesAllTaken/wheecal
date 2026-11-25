@@ -59,7 +59,8 @@ PyInstaller builds for the system it runs on. To build for all three, use the re
    - `wheecal-<tag>-windows.zip`
    - `wheecal-<tag>-linux.tar.gz`
 
-It uses only the workflow's `GITHUB_TOKEN`.
+It uses only the workflow's `GITHUB_TOKEN`. Pull requests that change `packaging/`, `requirements-build.txt` or
+the workflow run the same builds and checks but don't publish anything.
 
 To cut a release:
 1. Set `__version__` in `wheecal/__init__.py`.
