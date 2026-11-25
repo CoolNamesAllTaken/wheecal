@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.12'
+          - os: ubuntu-latest
+            python: '3.9'
+          - os: macos-latest
+            python: '3.12'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -r requirements.txt
+      - name: Tests (Linux, with the GUI test under Xvfb)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q xvfb python3-tk
+          WHEECAL_GUI_TESTS=1 xvfb-run -a python -m unittest discover -s tests -t . -v
+      - name: Tests (macOS)
+        if: runner.os == 'macOS'
+        run: python -m unittest discover -s tests -t . -v
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-build.txt
+      - run: pyinstaller --noconfirm packaging/wheecal.spec
+      - name: The built app starts and creates its settings file
+        run: |
+          export WHEECAL_CONFIG="$RUNNER_TEMP/wheecal/config.json"
+          dist/wheecal/wheecal --version
+          dist/wheecal/wheecal --dry-run --mock-librecal --load-kit librecal --calibrate s21 --yes --settle 0
+          test -f "$WHEECAL_CONFIG"
