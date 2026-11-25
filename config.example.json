@@ -1,0 +1,14 @@
+{
+  "driver": "rsa5065n",
+  "host": "",
+  "scpi_port": 5555,
+  "librecal_device": "auto",
+  "librecal_port": 1,
+  "through_port": 2,
+  "settle_s": 3.0,
+  "switch_settle_s": 0.5,
+  "mode": "auto",
+  "fit_band": "full",
+  "require_stable_temp": true,
+  "kit_check": true
+}

@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  # Pull requests that change the packaging build every platform without publishing.
+  pull_request:
+    paths: ['packaging/**', '.github/workflows/release.yml', 'requirements-build.txt']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macos
+          - os: windows-latest
+            name: windows
+          - os: ubuntu-latest
+            name: linux
+    runs-on: ${{ matrix.os }}
+    env:
+      LABEL: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'pr' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-build.txt
+      - name: Version matches the tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          v=$(python -c "import wheecal; print(wheecal.__version__)")
+          test "v$v" = "$GITHUB_REF_NAME" || { echo "wheecal.__version__ is $v but the tag is $GITHUB_REF_NAME"; exit 1; }
+      - run: python -m unittest discover -s tests -t .
+      - run: pyinstaller --noconfirm packaging/wheecal.spec
+      - name: Check and package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          WHEECAL_CONFIG="$RUNNER_TEMP/c/config.json" dist/wheecal.app/Contents/MacOS/wheecal --version
+          ditto -c -k --keepParent dist/wheecal.app "wheecal-$LABEL-macos.zip"
+      - name: Check and package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:WHEECAL_CONFIG = "$env:RUNNER_TEMP\c\config.json"
+          dist\wheecal\wheecal-cli.exe --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Compress-Archive -Path dist\wheecal -DestinationPath "wheecal-$env:LABEL-windows.zip"
+      - name: Check and package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          WHEECAL_CONFIG="$RUNNER_TEMP/c/config.json" dist/wheecal/wheecal --version
+          tar -C dist -czf "wheecal-$LABEL-linux.tar.gz" wheecal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheecal-${{ matrix.name }}
+          path: wheecal-${{ env.LABEL }}-*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
