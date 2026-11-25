@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+*.spec.bak
+# Your own settings live in your user config folder; never commit one.
+config.json
+.DS_Store
