@@ -70,3 +70,6 @@ Then register the driver in `wheecal/drivers/__init__.py` (`DRIVERS`). It shows 
 - **Test the driver against its mock.** `tests/test_drivers.py` checks every registered driver against the
   contract. Add tests like `tests/test_calflow.py` that assert the exact SCPI sequence of each calibration.
 - **Run the first real calibration on a bench, in guided mode.** Note in the notes page what you verified.
+- **Host-side calibration is optional.** It needs `read_s11()` (the trace as complex numbers) and `sweep_freqs()`
+  (Hz per point), plus `cal_abort('S11')` so the trace reads raw. A driver without them gets a clear error from
+  `--host-cal`. See [host-calibration.md](host-calibration.md).

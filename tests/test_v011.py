@@ -122,10 +122,16 @@ class NoAutoAbortTests(IsolatedConfig, unittest.TestCase):
         self.assertNotIn(':CALibration:S11:SAVE', self.vna.writes)
 
     def test_no_abort_path_after_save_in_the_code(self):
-        """The only cal_abort() calls: calflow before Done, the GUI's and CLI's explicit discard."""
+        """The only cal_abort() calls: calflow before Done, the GUI's and CLI's explicit discard, and (v0.2.0)
+        hostcal.go_raw, which the user asks for with a host-side calibration (it needs raw reads; it warns)."""
         root = Path(__file__).resolve().parent.parent / 'wheecal'
         calls = {p.name: p.read_text().count('cal_abort(') for p in root.glob('*.py')}
-        self.assertEqual({k: v for k, v in calls.items() if v}, {'calflow.py': 1, 'gui.py': 1, 'cli.py': 1})
+        self.assertEqual({k: v for k, v in calls.items() if v}, {'calflow.py': 1, 'gui.py': 1, 'cli.py': 1,
+                                                                    'hostcal.py': 1})
+        host = (root / 'hostcal.py').read_text()
+        go_raw = host[host.index('def go_raw('):host.index('def read_raw(')]
+        self.assertIn("vna.cal_abort('S11')", go_raw)
+        self.assertLess(go_raw.index('log(RAW_WARNING)'), go_raw.index('cal_abort'))
         src = (root / 'calflow.py').read_text()
         self.assertLess(src.index('elif started and opts.mode == \'auto\':'), src.index('vna.cal_abort(meas)'))
 

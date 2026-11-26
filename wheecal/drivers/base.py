@@ -82,6 +82,11 @@ class VnaDriver(abc.ABC):
         """The sweep (Hz), read only, or None."""
         return None
 
+    def sweep_freqs(self) -> list[float] | None:
+        """The frequency (Hz) of each sweep point, or None when it can't be read. Optional: host-side calibration
+        (wheecal.hostcal) needs it."""
+        return None
+
     def measurement_settle(self, min_s: float) -> float:
         """Seconds to wait so a measurement reflects what the port sees now (after switching a standard, or after a
         calibration step), never less than min_s. Default min_s; an instrument with slow sweeps scales it to its

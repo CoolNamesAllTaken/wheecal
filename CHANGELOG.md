@@ -3,6 +3,32 @@
 All notable changes are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-11-26
+
+### Added
+- **Host-side S11 calibration** (`wheecal.hostcal`, [docs/host-calibration.md](docs/host-calibration.md)).
+  - wheecal measures the LibreCAL Open, Short and Load raw, and solves the 3-term one-port error model per sweep
+    point against the LibreCAL's FACTORY coefficients, interpolated onto the sweep.
+  - It corrects DUT traces in software, so there is no kit-model error. The VNA's parametric kit can't describe
+    the LibreCAL standards, which is why on-board calibrations spiked above 0 dB.
+  - Bench, RSA5065N 100 kHz-3 GHz: independent through check mean |error| 0.062, max 0.107. On-board, the
+    fitted LibreCAL kit gave 0.146 / 7.32, and the ideal kit 0.109 / 0.232.
+- CLI:
+  - `--host-cal`: save the error terms (`hostcal.json` next to the settings, or `--host-cal-file`).
+  - `--host-cal-verify`: the independent check. The LibreCAL through, far port matched, is compared with its
+    FACTORY S11. Pass: mean < 0.12. Exit code 1 on a fail.
+  - `--host-correct OUT.s1p`: correct the DUT on the test port and write Touchstone.
+  - `--host-cal --export OUT.s1p`: calibrate, then measure and write the DUT.
+  - All of these simulate with `--dry-run --mock-librecal`.
+- Driver interface: optional `sweep_freqs()`. RSA5065N: `sweep_points()` (`:SWEep:POINts?`) and `sweep_freqs()`.
+  The mock answers the points query, and `follow_raw()` makes its trace an uncorrected port behind an error box.
+- Tests: solver, correction, interpolation, terms file, `.s1p`, flows, CLI. A trimmed real capture (25 points)
+  locks in the bench result.
+
+### Changed
+- The host-side commands abort the VNA's on-board S11 calibration to read raw, with a warning; `--host-cal` asks
+  first unless `--yes`. Nothing else changed: on-board calibrations are still never discarded automatically.
+
 ## [0.1.2] - 2026-11-26
 
 ### Fixed

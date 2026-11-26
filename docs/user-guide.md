@@ -108,10 +108,23 @@ wheecal --calibrate s21                        # 2-port through; same as --calib
 wheecal --calibrate-thru --librecal-port 3 --through-port 4 --mode guided
 wheecal --discard-cal s11                      # discard the VNA's S11 calibration (asks first; never automatic)
 wheecal --dry-run --mock-librecal --load-kit librecal --calibrate s21 --yes     # full simulation
+wheecal --host-cal --host-cal-verify           # host-side S11 cal + independent check (aborts the on-board cal)
+wheecal --host-correct dut.s1p                 # DUT on the test port -> host-corrected Touchstone file
+wheecal --host-cal --export dut.s1p            # host-side cal, then measure and export the DUT
 ```
 
 Flags override the settings file for one run: `--driver`, `--host`, `--scpi-port`, `--device` (LibreCAL serial
 port), `--librecal-port`, `--through-port`, `--mode`, `--settle`, `--fit-band`.
+
+## Host-side S11 calibration (most accurate)
+
+The VNA's on-board calibration solves against a parametric kit that the LibreCAL's standards don't fit exactly.
+`--host-cal` solves the calibration in wheecal instead, against the LibreCAL's measured standards, and corrects
+measurements in software. On the bench it was about twice as accurate as the on-board calibration, and it had none
+of the on-board calibration's spikes above 0 dB. It clears the VNA's on-board S11 calibration (raw reads), so the
+VNA screen shows the raw trace. Read the corrected data from the `.s1p` that `--host-correct` / `--export` writes.
+`--host-cal-verify` checks the calibration against the LibreCAL through, which the calibration doesn't use.
+Command line only for now. See [Host-side S11 calibration](host-calibration.md).
 
 ## After calibrating
 
