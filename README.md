@@ -86,6 +86,9 @@ Settings are stored per user and created on the first run. They contain no instr
 - **Limited writes.** wheecal only writes cal-kit fields and calibration steps. Each driver refuses anything else
   before it is sent. wheecal never changes span, points, IF bandwidth, source power, mode or measurement, never
   presets, and never clears a calibration.
+- **No automatic discard.** After Done, a calibration is left in place. wheecal checks it from the VNA's screen
+  (the correction badge), because the RSA5065N's state query is unreliable. It is discarded (Abort) only when you
+  cancel or an error occurs before Done, or when you ask: GUI **Abort / discard**, CLI `--discard-cal`.
 - **Pick the right kit.** A calibration replaces the VNA's current one for that measurement, and the VNA solves it
   with its selected kit. Load the *LibreCAL standards* kit first. wheecal reads it back before calibrating and
   stops if it differs.

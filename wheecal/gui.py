@@ -213,8 +213,8 @@ class App:
         ttk.Spinbox(row, from_=1, to=4, textvariable=self.tport, width=3).pack(side='left', padx=4)
         row = ttk.Frame(lf); row.pack(fill='x', **pad)
         self.fitband = tk.StringVar(value=c['fit_band'])
-        ttk.Radiobutton(row, text='fit full band', value='full', variable=self.fitband).pack(side='left')
-        ttk.Radiobutton(row, text='fit VNA span', value='span', variable=self.fitband).pack(side='left', padx=4)
+        ttk.Radiobutton(row, text='fit VNA sweep', value='span', variable=self.fitband).pack(side='left')
+        ttk.Radiobutton(row, text='fit full band', value='full', variable=self.fitband).pack(side='left', padx=4)
         self.b_fit = ttk.Button(row, text='Fit LibreCAL standards (preview)', command=self.fit_preview)
         self.b_fit.pack(side='left', padx=6)
 
@@ -257,6 +257,9 @@ class App:
 
         row = ttk.Frame(self.root); row.pack(fill='x', **pad)
         ttk.Button(row, text='Cancel', command=self.cancel.set).pack(side='left', padx=4)
+        self.b_discard = ttk.Button(row, text='Abort / discard cal', command=self.discard_cal, state='disabled')
+        self.b_discard.pack(side='left', padx=4)
+        self.last_meas = None
         self.progress = ttk.Progressbar(row, length=300, mode='determinate')
         self.progress.pack(side='left', padx=8)
         self.step = tk.StringVar(value='')
@@ -458,7 +461,8 @@ class App:
         key = (port, band, tport)
         if self.fitted is None or self._fit_key != key:
             pair = (port, tport) if port != tport else None
-            self.fitted, _ = librecal_kit(self.cal, self.vna, port, band, pair, log=self.log)
+            self.fitted, _ = librecal_kit(self.cal, self.vna, port, band, pair, log=self.log,
+                                         driver=type(self.vna) if self.vna else drivers.get(self.cfg['driver']))
             self._fit_key = key
             self.log(f'Fitted: {self.fitted.note}')
         return self.fitted
@@ -478,7 +482,8 @@ class App:
         return calflow.CalOptions(mode=self.mode.get(), librecal_port=int(self.lport.get()),
                                   through_port=int(self.tport.get()), settle_s=float(self.settle.get()),
                                   switch_settle_s=float(self.cfg['switch_settle_s']),
-                                  require_stable_temp=bool(self.stable.get()))
+                                  require_stable_temp=bool(self.stable.get()),
+                                  evidence_dir=str(config.evidence_dir(self.config_file)))
 
     def _start(self, meas: str, question: str, ok_text: str):
         if not messagebox.askokcancel(f'Calibrate {meas}', question):
@@ -499,9 +504,35 @@ class App:
                                    prompt=self._prompt_from_worker, cancel=self.cancel)
 
         def done(res):
-            (messagebox.showinfo if res.ok else messagebox.showerror)(
-                'Calibration', ok_text if res.ok else f'Calibration stopped: {res.message}')
+            if res.saved:                       # left in place: the user may discard it, never automatic
+                self.last_meas = meas
+                self.b_discard.configure(state='normal', text=f'Abort / discard {meas} cal')
+            if res.ok and res.indicator in ('on', 'interpolated'):
+                messagebox.showinfo('Calibration', f'{ok_text}\n\n{res.message}')
+            elif res.ok:
+                messagebox.showwarning('Calibration', res.message)
+            elif res.saved:
+                messagebox.showwarning('Calibration', res.message)
+            else:
+                messagebox.showerror('Calibration', f'Calibration stopped: {res.message}')
         self.run(f'Calibrating {meas}', job, done)
+
+    def discard_cal(self):
+        meas = self.last_meas
+        if not meas or not messagebox.askyesno(
+                'Discard calibration', f"Discard the VNA's {meas} calibration (Abort)?\n\nwheecal never does this "
+                'on its own; the VNA then measures without it.'):
+            return
+
+        def job():
+            self.need_vna().cal_abort(meas)
+            return meas
+
+        def done(m):
+            self.b_discard.configure(state='disabled', text='Abort / discard cal')
+            self.last_meas = None
+            self._log_now(f'{m} calibration discarded (Abort sent).')
+        self.run(f'Discarding the {meas} calibration', job, done)
 
     def start_cal(self):
         self._start('S11', f"Run an S11 Open/Short/Load calibration on the VNA now ({self.mode.get()} mode)?\n\n"

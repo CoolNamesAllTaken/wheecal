@@ -7,7 +7,7 @@ SCPI used (the instrument's own SCPI tree and built-in help; checked with querie
   :CALibration:CKIT:LENGth|Z0|LOSS|C0..C3|L0..L3     the standard's fields (units below)
   :CALibration:CKIT:LABel CUSTom                     select the Custom kit
   :CALibration:S11:OPEN|SHORt|LOAD                   measure one standard (panel: S11 Meas Setup > Align > ...)
-  :CALibration:S11:SAVE | :ABORt | :STATe?           Done | Abort | 0/1
+  :CALibration:S11:SAVE | :ABORt | :STATe?           Done | Abort | 0/1 (STATe? is not trustworthy, see Quirks)
   :CALibration:S21:THROugh                           measure the through (panel: S21 Meas Setup > Align > Through)
   :CALibration:S21:SAVE | :ABORt | :STATe?           Done | Abort | 0/1
 The S21 calibration is a through (transmission response) calibration only: the firmware's :CALibration:S21 subtree
@@ -21,14 +21,22 @@ Quirks:
     standard enables may be written, and a greyed field's query answers garbage (LOAD LENGth? returns L3/1000).
   - Lengths are meters (the screen shows mm), C in fF/GHz^n, L in pH/GHz^n, LOSS is a flat dB ("Att").
   - The measure commands start an asynchronous measurement ("Open Calibrating..."): wait a few sweeps after *OPC?.
+  - :CALibration:S11:STATe? (and :STAT?) reads 0 even while a correction is on: on 2026-11-25 the panel showed
+    "C ?" while it read 0. :NORState?, :CALC:CORR:STAT? and :SENS:CORR:STAT? get no reply. So STATe? is advisory
+    only, and a calibration is verified from the screen: the correction badge at the top left of :PRIV:SNAP?
+    ("---" none, "Cor" on, "C ?" on but interpolated, "C !" on with a warning), see cal_indicator().
+  - :CALibration:<meas>:ABORt after SAVE discards the calibration: wheecal never sends it on its own after Done.
+  - The instrument sweeps to 6.5 GHz (FREQ_MAX_HZ): kit fits stop there.
 """
 from __future__ import annotations
 
 import threading
 import time
 
+from .. import screen
 from ..calkit import CalKit
 from ..transport import ScpiError
+from . import rsa5065n_badge as badge
 from .base import VnaDriver
 
 CKIT = ':CALibration:CKIT'
@@ -80,6 +88,11 @@ class RSA5065N(VnaDriver):
         ':CALibration:S21:THROugh', ':CALibration:S21:SAVE', ':CALibration:S21:ABORt',
     )
     FIELD_UNITS = UNITS
+    FREQ_MAX_HZ = 6.5e9
+    #: The correction badge (top left of the 1024x600 screenshot) and its references.
+    INDICATOR = screen.IndicatorSpec(box=badge.BOX, fill=badge.FILL, blank=badge.BLANK,
+                                     references={'on': badge.ON, 'interpolated': badge.INTERPOLATED},
+                                     labels={'none': '"---"', 'interpolated': '"C ?"', 'on': '"Cor"'})
     #: Pause after each paced write (the instrument drops settings that arrive too quickly).
     write_gap_s = 0.03
 
@@ -233,7 +246,8 @@ class RSA5065N(VnaDriver):
         self._check(meas)
         return self.query(f':CALibration:{meas}:STATe?').strip() == '1'
 
-    def cal_save(self, meas: str, wait_s: float = 15.0) -> bool:
+    def cal_save(self, meas: str, wait_s: float = 3.0) -> bool:
+        """Done. Returns STATe? (advisory: this firmware reads 0 with a correction on; see cal_indicator)."""
         self._check(meas)
         self.write(f':CALibration:{meas}:SAVE', opc_timeout=60)
         deadline = time.monotonic() + wait_s
@@ -247,6 +261,12 @@ class RSA5065N(VnaDriver):
         self._check(meas)
         self.write(f':CALibration:{meas}:ABORt')
 
+    def cal_indicator(self, meas: str) -> screen.Indicator:
+        """The correction badge on a fresh screenshot (the badge shows the displayed measurement's correction)."""
+        self._check(meas)
+        img, _ext = self.snapshot()
+        return screen.classify(screen.decode_bmp(img), self.INDICATOR)
+
     def panel_hint(self, meas: str, step: str) -> str:
         return PANEL.get((meas, step), super().panel_hint(meas, step))
 
@@ -256,7 +276,8 @@ class MockRSA5065N:
     records every line written (`log`). Reproduces the greyed-field quirk (LOAD LENGth? = L3/1000) and, with
     `drop_every`, a dropped write. `meas` is what :CONF? answers; `mode` what :INST:SEL? answers."""
 
-    def __init__(self, drop_every: int = 0, cal_state: str = '0', meas: str = 'S11', mode: str = 'VNA'):
+    def __init__(self, drop_every: int = 0, cal_state: str = '0', meas: str = 'S11', mode: str = 'VNA',
+                 state_lies: bool = False, screen_badge: str | None = None):
         self.log: list[str] = []
         self.kit = {'LENGth': {'OPEN': 0.01, 'SHOR': 0.01, 'LOAD': 0.0, 'THRU': 0.0},
                     'Z0': {t: 50.0 for t in ('OPEN', 'SHOR', 'LOAD', 'THRU')},
@@ -271,6 +292,19 @@ class MockRSA5065N:
         self.lock = threading.RLock()
         self.span = {'FREQ:STAR': 1.2e9, 'FREQ:STOP': 1.9e9}
         self._pending = None
+        self.state_lies = state_lies         # STATe? always '0', like firmware 00.03.08
+        self.screen_badge = screen_badge     # None: from the cal state; none | on | interpolated | other | missing
+
+    def screenshot(self) -> bytes:
+        """A 1024x600 BMP: black, with the correction badge drawn for the shown measurement."""
+        kind = self.screen_badge or ('on' if self.cal.get(self.meas) == '1' else 'none')
+        frame = screen.Bitmap.solid(1024, 600)
+        if kind != 'missing':
+            ref = {'none': badge.BLANK, 'on': badge.ON, 'interpolated': badge.INTERPOLATED}.get(kind)
+            frame = frame.paste(ref or badge.BLANK, badge.BOX[0], badge.BOX[1])
+            if ref is None:                  # another mark (e.g. "C !"): a glyph that is not a reference
+                frame = frame.paste(screen.Bitmap.solid(9, 11, (230, 120, 40)), badge.BOX[0] + 16, badge.BOX[1] + 7)
+        return screen.encode_bmp(frame)
 
     _NAMES = {'TYPE': 'TYPE', 'LENG': 'LENGth', 'LENGTH': 'LENGth', 'LAB': 'LABel', 'LABEL': 'LABel', 'Z0': 'Z0',
               'LOSS': 'LOSS'}
@@ -337,7 +371,11 @@ class MockRSA5065N:
             return self.meas
         path = self._cal_path(q)
         if path and path[1] in ('STAT', 'STATE'):
-            return self.cal[path[0]]
+            return '0' if self.state_lies else self.cal[path[0]]
+        if q in (':PRIV:SNAP', ':PRIVATE:SNAP'):
+            img = self.screenshot()
+            n = str(len(img))
+            return b'#' + str(len(n)).encode() + n.encode() + img
         if path and path[0] == 'S21' and path[1] in ('NORS', 'NORSTATE'):
             return '0'
         if q in (':SYST:ERR', ':SYSTEM:ERROR'):
@@ -362,6 +400,8 @@ class MockRSA5065N:
         ans, self._pending = self._pending, None
         if ans is None:
             raise ScpiError('no reply (unknown command, or the instrument is busy)')
+        if isinstance(ans, bytes):
+            return ans if raw else ans.decode('latin-1')
         return ans.encode() if raw else ans
 
     def query(self, q: str, timeout=None, raw=False):

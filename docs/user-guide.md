@@ -36,38 +36,62 @@ The VNA keeps one user kit, so loading one kit replaces the other. Back up first
 - **Port on the VNA test port / output** is the LibreCAL port cabled to VNA port 1. **On the VNA input** is the one
   cabled to VNA port 2 (S21 only).
 - **Fit LibreCAL standards (preview)** shows the fitted kit without writing it.
-  - **fit full band** (recommended) fits over all of the LibreCAL's data.
-  - **fit VNA span** fits over the current sweep only.
+  - **fit VNA sweep** (default) fits over the VNA's current sweep: the band the calibration is used in.
+  - **fit full band** fits over all of the LibreCAL's data.
+
+  Either way the fit stops at the VNA's highest frequency (RSA5065N: 6.5 GHz). The log shows the band and each
+  standard's worst error. A **WARNING** means the LibreCAL open (or short) doesn't reduce well to the VNA's
+  C0..C3 (L0..L3) model in that band. That is a limit of the model; a narrower sweep helps.
 
 ### Calibration options
 
 - **Automatic:** wheecal sends the VNA's measure and apply commands.
-- **Guided:** wheecal switches the LibreCAL, then tells you which VNA button to press. At the end it checks that
-  the calibration is on.
+- **Guided:** wheecal switches the LibreCAL, then tells you which VNA button to press. At the end it checks the
+  VNA's screen, as in automatic mode.
 - **settle s:** the wait after each measurement. Allow a few full sweeps; raise it for slow sweeps.
 - **require stable LibreCAL temperature** and **check VNA kit = LibreCAL fit** are on by default.
 
 ### 3. Calibrate S11 (Open, Short, Load)
 
 The VNA must measure S11. For each standard, wheecal switches the LibreCAL port to it, the VNA measures it, then
-the next one. Then wheecal applies the calibration ("Done") and checks it is on.
+the next one. Then wheecal applies the calibration ("Done") and checks the VNA's screen (see below).
 
 ### 4. Calibrate S21 (2-port Through)
 
 The VNA must measure S21: select it on the panel. If it doesn't, wheecal stops and says so.
 1. wheecal connects the two LibreCAL ports to each other (THROUGH).
 2. The VNA measures the through.
-3. wheecal applies the calibration and checks it is on.
+3. wheecal applies the calibration and checks the VNA's screen.
 
 On the RSA5065N this is a through (transmission response) calibration. The instrument has no isolation step.
 
-**Cancel** stops between steps. If something fails after the first measurement, wheecal aborts the VNA's
-calibration (in automatic mode) and always sets every LibreCAL port to NONE. The log records each step.
+**Cancel** stops between steps. If something fails after the first measurement but before Done, wheecal aborts
+the VNA's partial calibration (in automatic mode). It always sets every LibreCAL port to NONE. The log records
+each step.
+
+### After Done: how wheecal checks, and what it never does
+
+**wheecal never discards a calibration after Done.** The RSA5065N's state query (`STATe?`) reads 0 even while a
+correction is on, so it can't be trusted. wheecal logs it, but it is never a reason to abort.
+
+Instead, wheecal takes a screenshot and reads the correction badge at the top left of the VNA screen:
+
+| The VNA shows | wheecal says |
+|---|---|
+| **Cor** | applied |
+| **C ?** | applied, interpolated (the cal was taken at other points or conditions) |
+| **---** | saved, but no correction on screen. Check the VNA. The calibration is left in place |
+| something else | saved, could not auto-verify. Check that the VNA shows Cor or C ? |
+
+Each check saves the badge crop in the `indicator` folder next to the settings file.
+
+To throw a calibration away, use **Abort / discard &lt;meas&gt; cal** (next to Cancel; it asks first), or the VNA's
+own Abort. From the command line: `wheecal --discard-cal s11`.
 
 ## Command line
 
 Any argument runs the command line instead of the GUI. `wheecal --help` lists every flag. Exit codes: 0 OK,
-1 read-back mismatch or failed or cancelled calibration, 2 connection or instrument error.
+1 read-back mismatch, a failed or cancelled calibration, or one saved but not shown as on by the VNA, 2 connection or instrument error.
 
 ```bash
 wheecal --show-config                          # where the settings are, and what they say
@@ -78,6 +102,7 @@ wheecal --verify librecal
 wheecal --calibrate                            # S11 Open/Short/Load (asks first)
 wheecal --calibrate s21                        # 2-port through; same as --calibrate-thru
 wheecal --calibrate-thru --librecal-port 3 --through-port 4 --mode guided
+wheecal --discard-cal s11                      # discard the VNA's S11 calibration (asks first; never automatic)
 wheecal --dry-run --mock-librecal --load-kit librecal --calibrate s21 --yes     # full simulation
 ```
 

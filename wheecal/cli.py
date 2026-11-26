@@ -12,6 +12,10 @@ Examples (192.0.2.10 stands for your VNA's address)
   wheecal --calibrate s21 --librecal-port 1 --through-port 2   2-port through (S21) calibration
   wheecal --calibrate-thru --mode guided                       same, you press the VNA's buttons
   wheecal --dry-run --mock-librecal --load-kit librecal --calibrate s21 --yes     full simulation
+  wheecal --discard-cal s11                                    discard the VNA's S11 calibration (asks first)
+
+A calibration is never discarded automatically after Done: wheecal checks the VNA's correction badge on its screen
+(the state query is unreliable on some firmware) and leaves the calibration in place either way.
 """
 from __future__ import annotations
 
@@ -55,12 +59,22 @@ def read_librecal_coeffs(cal: LibreCAL, port: int, thru_pair=None, set_name: str
     return coeffs
 
 
-def librecal_kit(cal: LibreCAL, vna, port: int, band: str, thru_pair=None, log=print) -> tuple[CalKit, dict]:
+def librecal_kit(cal: LibreCAL, vna, port: int, band: str, thru_pair=None, log=print, driver=None) -> tuple[CalKit, dict]:
+    """Fit the LibreCAL standards over band ('span': the VNA sweep, default; 'full': all the LibreCAL data), never
+    above the instrument's limit (vna or driver FREQ_MAX_HZ) or outside the LibreCAL data. Logs each standard's
+    worst error and a warning when the open or short does not reduce to the model."""
     coeffs = read_librecal_coeffs(cal, port, thru_pair, log=log)
-    lo = hi = None
-    if band == 'span' and vna is not None:
-        lo, hi = vna.span() or (None, None)
-    return fit.kit_from_librecal(coeffs, port, lo, hi, thru_pair)
+    freqs = [f for f, _ in coeffs[f'P{port}_OPEN'] if f > 0]
+    span = vna.span() if band == 'span' and vna is not None else None
+    f_max = getattr(vna if vna is not None else driver, 'FREQ_MAX_HZ', None)
+    lo, hi, how = fit.fit_band_limits(band, min(freqs), max(freqs), span, f_max)
+    log(f'Fit band: {lo / 1e9:.3f}-{hi / 1e9:.3f} GHz ({how})')
+    kit, fits = fit.kit_from_librecal(coeffs, port, lo, hi, thru_pair)
+    for k in ('OPEN', 'SHORT', 'LOAD'):
+        log(f'  {k.lower()}: worst error {fits[k].residual_db:.1f} dB over {fits[k].points} points')
+    for w in fit.residual_warnings(fits):
+        log('WARNING: ' + w)
+    return kit, fits
 
 
 def build_parser(cfg: dict) -> argparse.ArgumentParser:
@@ -89,8 +103,11 @@ def build_parser(cfg: dict) -> argparse.ArgumentParser:
     ap.add_argument('--librecal-port', type=int, help='LibreCAL port on the VNA test port (S11) / output (S21)')
     ap.add_argument('--through-port', type=int, help='LibreCAL port on the VNA input (S21)')
     ap.add_argument('--settle', type=float, help='seconds to wait per standard measurement')
-    ap.add_argument('--fit-band', choices=('full', 'span'),
-                    help='fit the LibreCAL standards over its whole range or only the VNA sweep')
+    ap.add_argument('--fit-band', choices=('span', 'full'),
+                    help='fit the LibreCAL standards over the VNA sweep (default) or their whole range; '
+                         "never above the VNA's limit")
+    ap.add_argument('--discard-cal', choices=('s11', 's21'),
+                    help="abort / discard the VNA's calibration of that measurement (asks first)")
     ap.add_argument('--no-kit-check', action='store_true', help='calibrate without reading the VNA kit back')
     ap.add_argument('--snapshot', metavar='FILE', help='save a VNA screenshot')
     ap.add_argument('--yes', action='store_true', help='do not ask before calibrating')
@@ -131,7 +148,7 @@ def main(argv=None) -> int:
     vna = cal = None
     try:
         driver = drivers.get(cfg['driver'])
-        need_vna = any((a.load_kit, a.verify, a.backup, a.restore, meas, a.snapshot))
+        need_vna = any((a.load_kit, a.verify, a.backup, a.restore, meas, a.snapshot, a.discard_cal))
         if need_vna:
             vna = driver.mock(meas=meas or 'S11') if a.dry_run else driver.connect(cfg['host'], cfg['scpi_port'])
             info = vna.require_mode()
@@ -157,7 +174,7 @@ def main(argv=None) -> int:
 
         def kit_for(choice):
             if choice == 'librecal':
-                kit, _ = librecal_kit(cal, vna, cfg['librecal_port'], cfg['fit_band'], pair)
+                kit, _ = librecal_kit(cal, vna, cfg['librecal_port'], cfg['fit_band'], pair, driver=driver)
                 print(f'{kit.name}: {kit.note}')
                 return kit
             return BUILTIN_KITS[choice]
@@ -194,14 +211,26 @@ def main(argv=None) -> int:
                 return 1
             opts = calflow.CalOptions(mode=cfg['mode'], librecal_port=pair[0], through_port=pair[1],
                                       settle_s=cfg['settle_s'], switch_settle_s=cfg['switch_settle_s'],
-                                      require_stable_temp=cfg['require_stable_temp'], expected_kit=expected)
+                                      require_stable_temp=cfg['require_stable_temp'], expected_kit=expected,
+                                      evidence_dir=str(config.evidence_dir(a.config)))
             res = calflow.run_cal(vna, cal, meas, opts, log=print,
                                   prompt=lambda m: input(m + '\n[Enter] continue, q quit: ').strip().lower() != 'q')
             if a.dry_run:
                 print('VNA commands (simulated):', *vna.writes, sep='\n  ')
-            print('CAL', 'OK' if res.ok else 'FAILED', '-', res.message)
+            print('CAL', 'OK' if res.ok else ('SAVED, NOT APPLIED' if res.saved else 'FAILED'), '-', res.message)
+            if res.saved:
+                print(f'To discard it: wheecal --discard-cal {meas.lower()}')
             if not res.ok:
                 return 1
+        if a.discard_cal:
+            m = a.discard_cal.upper()
+            if not vna.supports(m):
+                raise ScpiError(f'{driver.TITLE} has no {m} calibration in wheecal')
+            if not a.yes and input(f"Discard the VNA's {m} calibration (Abort)? [y/N] ").strip().lower() != 'y':
+                print('not discarded')
+                return 1
+            vna.cal_abort(m)
+            print(f'{m} calibration discarded (Abort sent)')
         if a.snapshot:
             img, _ext = vna.snapshot()
             with open(a.snapshot, 'wb') as fh:

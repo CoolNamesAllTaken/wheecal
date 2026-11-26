@@ -31,7 +31,7 @@ class S11FlowTests(unittest.TestCase):
         self.cal.link.script.clear()
 
     def opts(self, **kw):
-        return calflow.CalOptions(settle_s=0, switch_settle_s=0, expected_kit=self.kit, **kw)
+        return calflow.CalOptions(settle_s=0, switch_settle_s=0, verify_gap_s=0, expected_kit=self.kit, **kw)
 
     def test_auto_sequence(self):
         res = calflow.run_s11(self.vna, self.cal, self.opts(), log=lambda m: None)
@@ -103,7 +103,7 @@ class S21FlowTests(unittest.TestCase):
 
     def opts(self, **kw):
         kw.setdefault('expected_kit', self.kit)
-        return calflow.CalOptions(settle_s=0, switch_settle_s=0, **kw)
+        return calflow.CalOptions(settle_s=0, switch_settle_s=0, verify_gap_s=0, **kw)
 
     def test_exact_auto_sequence(self):
         events = trace(self.vna, self.cal)
@@ -183,11 +183,14 @@ class S21FlowTests(unittest.TestCase):
         self.assertEqual(self.vna.writes[-1], ':CALibration:S21:ABORt')
         self.assertEqual(self.cal.link.ports, ['NONE'] * 4)
 
-    def test_save_that_does_not_apply_fails(self):
-        self.vna.cal_save = lambda meas, wait_s=15.0: False
+    def test_save_that_does_not_apply_is_reported_and_left_in_place(self):
+        self.vna.t.screen_badge = 'none'
         res = calflow.run_s21(self.vna, self.cal, self.opts(), log=lambda m: None)
         self.assertFalse(res.ok)
-        self.assertIn('did not apply', res.message)
+        self.assertTrue(res.saved)
+        self.assertEqual(res.indicator, 'none')
+        self.assertIn('left in place', res.message)
+        self.assertFalse(any('ABOR' in w.upper() for w in self.vna.writes), 'never aborted after Done')
 
 
 class IsolationStepTests(unittest.TestCase):
@@ -205,8 +208,9 @@ class IsolationStepTests(unittest.TestCase):
                 return True
 
         self_cal = LibreCAL.mock()
-        vna = WithIsolation.mock(meas='S21')
-        res = calflow.run_s21(vna, self_cal, calflow.CalOptions(settle_s=0, switch_settle_s=0), log=lambda m: None)
+        vna = WithIsolation.mock(meas='S21', screen_badge='on')
+        res = calflow.run_s21(vna, self_cal, calflow.CalOptions(settle_s=0, switch_settle_s=0, verify_gap_s=0),
+                              log=lambda m: None)
         self.assertTrue(res.ok, res.message)
         self.assertEqual(vna.measured, [('ISOLATION', ('LOAD', 'LOAD', 'NONE', 'NONE')),
                                         ('THRU', ('THROUGH 2', 'THROUGH 1', 'NONE', 'NONE'))])
