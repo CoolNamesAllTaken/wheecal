@@ -45,6 +45,8 @@ And implement:
 | `cal_measure(meas, step, settle_s)` | measure one standard and return once it is done (wait out asynchronous measurements) |
 | `cal_save(meas)`, `cal_abort(meas)`, `cal_state(meas)` | apply, abort, query |
 | `panel_hint(meas, step)` | the panel path for guided mode, e.g. `S21 Meas Setup > Align > Through` (`step` `'DONE'` = apply) |
+| `measurement_settle(min_s)` | optional: seconds until a measurement reflects what the port sees now (default `min_s`). Override it when sweeps can be slow and the instrument's operation-complete query doesn't wait for them: the RSA5065N returns 2 × `:SWEep:TIME?` + 1 s. The cal flow waits this after each LibreCAL switch; call it in `cal_measure` too. |
+| `read_s11()` | optional: the S11 trace as a list of complex numbers, used by `--verify-standards` (skipped without it) |
 | `span()`, `snapshot()` | optional |
 
 Step names wheecal knows, and what the LibreCAL does for each:

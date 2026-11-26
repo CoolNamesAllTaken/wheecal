@@ -3,6 +3,8 @@ Rigol RSA5065N with the VNA option (RSA5000 series VNA mode): custom cal kit, S1
 
 SCPI used (the instrument's own SCPI tree and built-in help; checked with queries on firmware 00.03.08; docs/rsa5065n.md):
   *IDN?  *OPC?  :INST:SEL? (VNA)  :CONF? (S11|S21|DTF)  :FREQ:STAR?  :FREQ:STOP?  :PRIV:SNAP?
+  :SWEep:TIME?                                       one sweep, seconds (scales with points / IF bandwidth)
+  :TRACe1:DATA?                                      the S11 trace, ASCII "(re,im)(re,im)..." (FORMat:DATA ASC,8)
   :CALibration:CKIT:TYPE OPEN|SHORt|LOAD|THRough   which standard the fields below edit
   :CALibration:CKIT:LENGth|Z0|LOSS|C0..C3|L0..L3     the standard's fields (units below)
   :CALibration:CKIT:LABel CUSTom                     select the Custom kit
@@ -20,7 +22,12 @@ Quirks:
   - The Custom kit holds ONE open (C0..C3) and ONE short (L0..L3), shared by all standards; only the fields a
     standard enables may be written, and a greyed field's query answers garbage (LOAD LENGth? returns L3/1000).
   - Lengths are meters (the screen shows mm), C in fF/GHz^n, L in pH/GHz^n, LOSS is a flat dB ("Att").
-  - The measure commands start an asynchronous measurement ("Open Calibrating..."): wait a few sweeps after *OPC?.
+  - The measure commands start an asynchronous measurement ("Open Calibrating..."), and *OPC? does NOT wait for a
+    sweep (it answers in ~0.2 s while a 4.5 s sweep runs). One sweep takes :SWEep:TIME? seconds (about 4.5 s at 1000
+    points), so after each LibreCAL switch and after each cal step wheecal waits 2 x sweep time + 1 s (at least the
+    configured settle times; measurement_settle). With fixed 0.5 s / 3 s waits the OSL captured blends of two
+    standards and the applied calibration read well above 0 dB (2026-11-26).
+  - :TRACe:DATA? TRACE1 answers 'error': the trace is read with :TRACe1:DATA?.
   - :CALibration:S11:STATe? (and :STAT?) reads 0 even while a correction is on: on 2026-11-25 the panel showed
     "C ?" while it read 0. :NORState?, :CALC:CORR:STAT? and :SENS:CORR:STAT? get no reply. So STATe? is advisory
     only, and a calibration is verified from the screen: the correction badge at the top left of :PRIV:SNAP?
@@ -30,6 +37,7 @@ Quirks:
 """
 from __future__ import annotations
 
+import re
 import threading
 import time
 
@@ -76,6 +84,14 @@ def same(a: float | None, b: float) -> bool:
     return a is not None and abs(a - b) <= max(1e-9, 2e-5 * max(abs(a), abs(b)))
 
 
+def parse_trace(text: str) -> list[complex]:
+    """'(1.0,0.5)(0.9,-0.1)' -> [1+0.5j, 0.9-0.1j]. Raises ValueError on anything else (e.g. 'error')."""
+    pts = re.findall(r'\(\s*([^,()]+?)\s*,\s*([^,()]+?)\s*\)', text)
+    if not pts or re.sub(r'\([^()]*\)|[\s,]', '', text):
+        raise ValueError(f'not an (re,im) trace: {text[:60]!r}')
+    return [complex(float(a), float(b)) for a, b in pts]
+
+
 class RSA5065N(VnaDriver):
     NAME = 'rsa5065n'
     TITLE = 'Rigol RSA5065N (VNA option)'
@@ -93,6 +109,9 @@ class RSA5065N(VnaDriver):
     INDICATOR = screen.IndicatorSpec(box=badge.BOX, fill=badge.FILL, blank=badge.BLANK,
                                      references={'on': badge.ON, 'interpolated': badge.INTERPOLATED},
                                      labels={'none': '"---"', 'interpolated': '"C ?"', 'on': '"Cor"'})
+    #: Settle after a switch or cal step: SWEEP_SETTLE_FACTOR sweeps + SWEEP_SETTLE_MARGIN_S (measurement_settle).
+    SWEEP_SETTLE_FACTOR = 2.0
+    SWEEP_SETTLE_MARGIN_S = 1.0
     #: Pause after each paced write (the instrument drops settings that arrive too quickly).
     write_gap_s = 0.03
 
@@ -138,6 +157,24 @@ class RSA5065N(VnaDriver):
             return float(self.query(':FREQ:STAR?')), float(self.query(':FREQ:STOP?'))
         except (ScpiError, ValueError):
             return None
+
+    def sweep_time(self) -> float | None:
+        """One sweep in seconds (:SWEep:TIME?), or None when it can't be read."""
+        try:
+            return float(self.query(':SWEep:TIME?'))
+        except (ScpiError, ValueError):
+            return None
+
+    def measurement_settle(self, min_s: float) -> float:
+        """*OPC? doesn't wait for sweeps here, so wait by time: two full sweeps plus a margin, at least min_s."""
+        sw = self.sweep_time()
+        if sw is None or sw <= 0:
+            return min_s
+        return max(min_s, self.SWEEP_SETTLE_FACTOR * sw + self.SWEEP_SETTLE_MARGIN_S)
+
+    def read_s11(self) -> list[complex]:
+        """The S11 trace (:TRACe1:DATA?, ASCII "(re,im)(re,im)...") as complex reflection coefficients."""
+        return parse_trace(self.query(':TRACe1:DATA?', timeout=10.0))
 
     def snapshot(self, timeout: float = 20.0) -> tuple[bytes, str]:
         raw = self.t.query(':PRIV:SNAP?', timeout=timeout, raw=True)
@@ -239,7 +276,7 @@ class RSA5065N(VnaDriver):
     def cal_measure(self, meas: str, step: str, settle_s: float = 3.0) -> None:
         self._check(meas, step)
         self.write(MEASURE[(meas, step)], opc_timeout=60)
-        time.sleep(settle_s)
+        time.sleep(self.measurement_settle(settle_s))
         self.opc(60)
 
     def cal_state(self, meas: str) -> bool:
@@ -277,7 +314,8 @@ class MockRSA5065N:
     `drop_every`, a dropped write. `meas` is what :CONF? answers; `mode` what :INST:SEL? answers."""
 
     def __init__(self, drop_every: int = 0, cal_state: str = '0', meas: str = 'S11', mode: str = 'VNA',
-                 state_lies: bool = False, screen_badge: str | None = None):
+                 state_lies: bool = False, screen_badge: str | None = None, sweep_s: float = 0.0,
+                 trace: str = '(1.0,0.0)(0.99,-0.05)(0.98,-0.1)'):
         self.log: list[str] = []
         self.kit = {'LENGth': {'OPEN': 0.01, 'SHOR': 0.01, 'LOAD': 0.0, 'THRU': 0.0},
                     'Z0': {t: 50.0 for t in ('OPEN', 'SHOR', 'LOAD', 'THRU')},
@@ -294,6 +332,18 @@ class MockRSA5065N:
         self._pending = None
         self.state_lies = state_lies         # STATe? always '0', like firmware 00.03.08
         self.screen_badge = screen_badge     # None: from the cal state; none | on | interpolated | other | missing
+        self.sweep_s = sweep_s               # :SWEep:TIME? (0: instant sweeps, so waits stay at their floors)
+        self.trace = trace                   # :TRACe1:DATA? reply, or a callable returning it (see follow())
+
+    #: A corrected S11 reading per LibreCAL state (follow()): open/short near 0 dB, load near -40 dB.
+    FOLLOW_GAMMA = {'OPEN': (1.0, 0.0), 'SHORT': (-0.998, 0.01), 'LOAD': (0.01, -0.002)}
+
+    def follow(self, librecal_link, port: int = 1, points: int = 5) -> None:
+        """Make :TRACe1:DATA? answer what a well-calibrated VNA reads from a mock LibreCAL's port (its .ports)."""
+        def trace():
+            re_, im = self.FOLLOW_GAMMA.get(librecal_link.ports[port - 1].split()[0], (0.3, 0.0))
+            return ''.join(f'({re_:.6e},{im:.6e})' for _ in range(points))
+        self.trace = trace
 
     def screenshot(self) -> bytes:
         """A 1024x600 BMP: black, with the correction badge drawn for the shown measurement."""
@@ -378,6 +428,10 @@ class MockRSA5065N:
             return b'#' + str(len(n)).encode() + n.encode() + img
         if path and path[0] == 'S21' and path[1] in ('NORS', 'NORSTATE'):
             return '0'
+        if q in (':SWE:TIME', ':SWEEP:TIME'):
+            return f'{self.sweep_s:.9e}'
+        if q in (':TRAC1:DATA', ':TRACE1:DATA'):
+            return self.trace() if callable(self.trace) else self.trace
         if q in (':SYST:ERR', ':SYSTEM:ERROR'):
             return '0,"No error"'
         if q in (':FREQ:STAR', ':FREQ:STOP'):

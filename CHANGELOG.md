@@ -3,6 +3,27 @@
 All notable changes are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.1.2] - 2026-11-26
+
+### Fixed
+- **Calibration waits scale to the sweep time.** At high point counts an S11 calibration read wildly above 0 dB
+  after Done. The RSA5065N's sweep takes about 4.5 s at 1000 points, but wheecal waited a fixed 0.5 s after
+  switching the LibreCAL and 3 s after each measure command, both shorter than one sweep. So each standard was
+  captured before it was fully swept in, as a blend with the previous one, and the error terms were wrong.
+  `*OPC?` does not help: on this firmware it answers in about 0.2 s and doesn't wait for the sweep.
+  - Now wheecal reads `:SWEep:TIME?` and waits 2 × sweep time + 1 s after each LibreCAL switch (before measuring)
+    and after each measure command. The settle times in the settings are the minimums.
+  - Bench check with the fix: Open mean 0.00 dB, Short -0.02 dB, Load -24 dB, badge "Cor".
+  - Applies to automatic and guided mode, S11 and S21.
+
+### Added
+- **`--verify-standards`**: after an S11 calibration (or on its own) the LibreCAL presents Open, Short and Load in
+  turn, and wheecal reads the corrected S11 trace and logs |S11| min/max/mean in dB for each. Pass: Open and Short
+  within 1 dB of 0 dB, Load below -15 dB. Exit code 1 on a fail. Skipped for drivers that can't read the trace.
+- Driver interface: `measurement_settle(min_s)` (default: `min_s`) and the optional `read_s11()`.
+- RSA5065N: `sweep_time()` (`:SWEep:TIME?`) and `read_s11()` (`:TRACe1:DATA?`). The mock answers both (sweep time
+  0 by default, so tests stay fast) and can make the trace follow a mock LibreCAL.
+
 ## [0.1.1] - 2026-11-26
 
 Fixes from the first bench calibration (RSA5065N firmware 00.03.08 with a LibreCAL).
