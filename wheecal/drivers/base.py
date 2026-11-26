@@ -38,6 +38,8 @@ class VnaDriver(abc.ABC):
     ALLOWED_WRITES: tuple = ()
     #: Units of the kit fields in result rows (field -> unit string).
     FIELD_UNITS: dict = {}
+    #: Highest frequency the instrument sweeps (Hz), or None: kit fits stop there.
+    FREQ_MAX_HZ: float | None = None
 
     def __init__(self, transport):
         self.t = transport
@@ -123,16 +125,23 @@ class VnaDriver(abc.ABC):
         """Measure one standard (as the panel's button), and wait until it is done."""
 
     @abc.abstractmethod
-    def cal_save(self, meas: str, wait_s: float = 15.0) -> bool:
-        """Apply the calibration ("Done"). True once cal_state(meas) reads on."""
+    def cal_save(self, meas: str, wait_s: float = 3.0) -> bool:
+        """Apply the calibration ("Done"). Returns cal_state(meas) after it (advisory when the instrument's state
+        query is unreliable: wheecal never aborts a saved calibration on it)."""
 
     @abc.abstractmethod
     def cal_abort(self, meas: str) -> None:
-        """Abort a calibration in progress."""
+        """Abort / discard the calibration. Sent only on the user's Cancel, after an error before Done, or when the
+        user asks to discard a saved calibration; never automatically after Done."""
 
     @abc.abstractmethod
     def cal_state(self, meas: str) -> bool:
-        """Whether the meas calibration is on."""
+        """Whether the meas calibration is on, as the instrument reports it over SCPI."""
+
+    def cal_indicator(self, meas: str):
+        """The instrument's on-screen correction indicator as a screen.Indicator (state on | interpolated | none |
+        unknown), or None when the driver can't read it (then cal_state() decides)."""
+        return None
 
     def panel_hint(self, meas: str, step: str) -> str:
         """What the operator presses on the instrument for a step in guided mode (step 'DONE' = apply)."""

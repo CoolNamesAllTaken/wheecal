@@ -32,8 +32,9 @@ class GuiSmokeTests(IsolatedConfig, unittest.TestCase):
         super().setUp()
         from wheecal import gui
         self.dialogs = []
-        self._saved = {n: getattr(messagebox, n) for n in ('askokcancel', 'showinfo', 'showerror', 'showwarning')}
+        self._saved = {n: getattr(messagebox, n) for n in ('askokcancel', 'askyesno', 'showinfo', 'showerror', 'showwarning')}
         messagebox.askokcancel = lambda *a, **k: (self.dialogs.append(('ask',) + a), True)[1]
+        messagebox.askyesno = lambda *a, **k: (self.dialogs.append(('askyesno',) + a), True)[1]
         for n in ('showinfo', 'showerror', 'showwarning'):
             setattr(messagebox, n, lambda *a, _n=n, **k: self.dialogs.append((_n,) + a))
         self.root = tk.Tk()
@@ -87,8 +88,32 @@ class GuiSmokeTests(IsolatedConfig, unittest.TestCase):
         self.assertTrue(app.vna.cal_state('S21'))
         log = app.logbox.get('1.0', 'end')
         self.assertIn('LibreCAL port 1 <-> port 2 THROUGH', log)
-        self.assertIn('S21 calibration ON', log)
+        self.assertIn('S21 calibration applied (the VNA shows a correction)', log)
         self.assertIn('Settings saved locally', app.saved.get())
+        # after Done: nothing aborted; the user may discard explicitly
+        self.assertFalse(any('ABOR' in w for w in app.vna.writes))
+        self.assertEqual(str(app.b_discard.cget('state')), 'normal')
+        self.assertIn('S21', app.b_discard.cget('text'))
+        app.discard_cal(); self.wait()
+        self.assertEqual(self.dialogs[-1][0], 'askyesno')
+        self.assertEqual(app.vna.writes[-1], ':CALibration:S21:ABORt')
+        self.assertEqual(str(app.b_discard.cget('state')), 'disabled')
+
+    def test_saved_but_blank_screen_warns_and_keeps_the_cal(self):
+        app = self.app
+        app.dry.set(True)
+        app.vna_connect(); self.wait()
+        app.portvar.set('<simulated LibreCAL>')
+        app.librecal_connect(); self.wait()
+        app.kitname.set('LibreCAL standards (fitted from its FACTORY data)')
+        app.load_kit(); self.wait()
+        app.settle.set(0.5)
+        app.vna.t.state_lies, app.vna.t.screen_badge = True, 'none'
+        app.start_cal(); self.wait()
+        self.assertEqual(self.dialogs[-1][:2], ('showwarning', 'Calibration'), self.dialogs[-1])
+        self.assertIn('left in place', self.dialogs[-1][2])
+        self.assertFalse(any('ABOR' in w for w in app.vna.writes))
+        self.assertEqual(str(app.b_discard.cget('state')), 'normal')
 
 
 if __name__ == '__main__':

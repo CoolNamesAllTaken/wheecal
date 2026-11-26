@@ -15,17 +15,30 @@ The VNA solves the calibration with its selected kit, which must describe the Li
 (fit.kit_from_librecal). With `expected_kit` the flow reads the VNA's kit back first and stops when it differs.
 
 Callbacks: log(str), progress(done, total, label), prompt(message) -> bool (False cancels). `cancel` is a
-threading.Event checked between steps. A failure after the first measurement aborts the VNA's calibration (auto)
-and the LibreCAL is always released (all ports NONE).
+threading.Event checked between steps. The LibreCAL is always released (all ports NONE).
+
+Abort rules: the VNA's calibration is aborted (auto mode) only on Cancel or an error BEFORE Done. After Done
+(SAVE) nothing is ever aborted automatically: a saved calibration stays in place, whatever the checks say; the
+user may discard it explicitly (GUI "Abort / discard", CLI --discard-cal).
+
+Verifying after Done: the instrument's state query is only advisory (the RSA5065N's STATe? reads 0 with a
+correction on). When the driver reads the on-screen correction indicator (cal_indicator), that decides:
+  on / interpolated  -> applied (ok)
+  none               -> saved but not applied (not ok; still left in place)
+  unknown            -> saved, could not verify: the operator checks the screen (ok, with a warning)
+The indicator crop is saved in opts.evidence_dir for debugging. Without an indicator, STATe? on = applied, off =
+could not verify.
 """
 from __future__ import annotations
 
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .calkit import CalKit
 from .librecal import LibreCAL, LibreCALError
+from .screen import encode_bmp
 from .transport import ScpiError
 
 #: Kit standards each measurement's calibration depends on (checked with expected_kit).
@@ -45,6 +58,9 @@ class CalOptions:
     switch_settle_s: float = 0.5       # wait after switching the LibreCAL
     require_stable_temp: bool = True
     expected_kit: CalKit | None = None
+    evidence_dir: str | None = None    # where the correction-indicator crops go (None: not kept)
+    verify_tries: int = 4              # screenshots taken after Done until the indicator shows a correction
+    verify_gap_s: float = 1.5
 
 
 @dataclass
@@ -52,6 +68,11 @@ class CalResult:
     ok: bool = False
     steps: list = field(default_factory=list)
     message: str = ''
+    meas: str = ''
+    saved: bool = False                # Done was sent (auto) or confirmed (guided): the calibration stays
+    indicator: str = ''                # on | interpolated | none | unknown | '' (not read)
+    state_query: bool | None = None    # what the instrument's state query said (advisory)
+    evidence: str = ''                 # the saved indicator crop
 
 
 def _noop(*_a, **_k):
@@ -78,7 +99,7 @@ def run_cal(vna, cal: LibreCAL, meas: str, opts: CalOptions, *, log=print, progr
             cancel: threading.Event | None = None) -> CalResult:
     cancel = cancel or threading.Event()
     prompt = prompt or (lambda msg: True)
-    res = CalResult()
+    res = CalResult(meas=meas)
     steps = vna.CAL_STEPS.get(meas)
     total = len(steps or ()) + 2
     ports = 4
@@ -138,25 +159,23 @@ def run_cal(vna, cal: LibreCAL, meas: str, opts: CalOptions, *, log=print, progr
 
         if opts.mode == 'auto':
             log(f'— Done: apply the {meas} calibration')
-            on = vna.cal_save(meas)
+            res.saved = True                     # from here on nothing is aborted
+            res.state_query = vna.cal_save(meas)
         else:
             if not prompt(f"On the VNA press: {vna.panel_hint(meas, 'DONE')}.\nThen press Continue."):
                 raise Cancelled('cancelled before Done')
-            deadline = time.monotonic() + 10
-            on = vna.cal_state(meas)
-            while not on and time.monotonic() < deadline:
-                time.sleep(0.5)
-                on = vna.cal_state(meas)
-        if not on:
-            raise ScpiError(f'the {meas} calibration state is still off after Done: the calibration did not apply')
-        log(f'{meas} calibration ON')
+            res.saved = True
+            res.state_query = _state(vna, meas)
         res.steps.append('DONE')
+        verify(vna, meas, opts, res, log)
         progress(total, total, 'done')
-        res.ok, res.message = True, f'{meas} calibration applied'
     except (Cancelled, ScpiError, LibreCALError, OSError, ValueError) as exc:
         res.ok, res.message = False, str(exc)
         log(f'STOPPED: {exc}')
-        if started and opts.mode == 'auto':
+        if res.saved:
+            res.message = f'{meas} calibration saved; then: {exc}. It was left in place: check the VNA screen.'
+            log(f'The {meas} calibration was saved and is left in place (nothing aborted).')
+        elif started and opts.mode == 'auto':
             try:
                 vna.cal_abort(meas)
                 log(f'VNA: {meas} calibration aborted')
@@ -170,6 +189,65 @@ def run_cal(vna, cal: LibreCAL, meas: str, opts: CalOptions, *, log=print, progr
             log('LibreCAL: all ports NONE')
         except (LibreCALError, OSError) as exc:
             log(f'LibreCAL release failed: {exc}')
+    return res
+
+
+def _state(vna, meas: str) -> bool | None:
+    try:
+        return vna.cal_state(meas)
+    except (ScpiError, OSError):
+        return None
+
+
+def save_evidence(res: CalResult, ind, opts: CalOptions, log) -> None:
+    if not opts.evidence_dir or ind is None or ind.crop is None:
+        return
+    try:
+        d = Path(opts.evidence_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / f"{res.meas}-indicator-{time.strftime('%Y%m%d-%H%M%S')}-{ind.state}.bmp"
+        p.write_bytes(encode_bmp(ind.crop))
+        res.evidence = str(p)
+        log(f'  indicator crop saved: {p}')
+    except OSError as exc:
+        log(f'  could not save the indicator crop: {exc}')
+
+
+def verify(vna, meas: str, opts: CalOptions, res: CalResult, log=print) -> CalResult:
+    """After Done: decide from the screen whether the calibration applied (never aborts anything)."""
+    st = res.state_query
+    log(f'  {meas} state query: {"?" if st is None else int(st)} (advisory only)')
+    ind = None
+    for n in range(max(1, opts.verify_tries)):
+        try:
+            ind = vna.cal_indicator(meas)
+        except (ScpiError, OSError, ValueError) as exc:
+            log(f'  screenshot failed: {exc}')
+            ind = None
+            break
+        if ind is None or ind.active:
+            break
+        if n + 1 < opts.verify_tries:
+            time.sleep(opts.verify_gap_s)        # the badge may lag the Done a little
+    if ind is not None:
+        res.indicator = ind.state
+        log(f'  screen: {ind.detail} {ind.scores}')
+        save_evidence(res, ind, opts, log)
+    if ind is not None and ind.active:
+        res.ok = True
+        res.message = f'{meas} calibration applied (the VNA shows a correction' + (
+            ', interpolated: "C ?")' if ind.state == 'interpolated' else ')')
+    elif ind is not None and ind.state == 'none':
+        res.ok = False
+        res.message = (f'{meas} calibration saved, but the VNA screen shows no correction ("---"). It was left in '
+                       'place: check the VNA, and discard it there or with "Abort / discard" if it is wrong.')
+    elif ind is None and st:
+        res.ok, res.message = True, f'{meas} calibration applied (state query on)'
+    else:
+        res.ok = True
+        res.message = (f'{meas} calibration saved; could not auto-verify: check the VNA shows "Cor" or "C ?" '
+                       '(it was left in place).')
+    log(res.message)
     return res
 
 

@@ -19,6 +19,11 @@ Through (fit_thru): the LibreCAL's P<ab>_THROUGH coefficient holds S11, S21, S12
 and b. The phase of S21 (S12 for a > b) is unwrapped and fitted with a straight line, phase = phi0 - 2 pi f tau
 (least squares). tau is the delay and c * tau the length in air. `residual_deg` is the worst deviation from the
 line; `loss_db` is the mean insertion loss (reported only).
+
+Band (fit_band): by default the fit uses the VNA's current sweep ('span'); 'full' uses the LibreCAL's whole data.
+Both stop at the instrument's highest frequency and stay within the LibreCAL data (fit_band_limits). A fit over more
+than the VNA sweeps only makes the in-band error worse (the RSA5065N sweeps to 6.5 GHz; the LibreCAL data goes to
+8.5 GHz or more).
 """
 from __future__ import annotations
 
@@ -165,6 +170,40 @@ def in_band(data, f_lo: float | None, f_hi: float | None):
     return data[lo:hi + 1]
 
 
+#: A worst open/short error above this (dB, |Gamma_model - Gamma_data|) gets a warning: the standard does not reduce
+#: to the VNA's model well in that band (-20 dB = 10 %).
+WARN_RESIDUAL_DB = -20.0
+
+
+def fit_band_limits(band: str, data_lo: float, data_hi: float, span=None, f_max=None) -> tuple[float, float, str]:
+    """(f_lo, f_hi, how) of a fit: band 'span' uses span (the VNA sweep) when known, else the data; 'full' the
+    data. Clamped to [data_lo, data_hi] and to f_max (the instrument's limit)."""
+    lo, hi, how = data_lo, data_hi, 'the LibreCAL data range'
+    if band == 'span' and span:
+        lo, hi, how = span[0], span[1], 'the VNA sweep'
+    elif band == 'span':
+        how = 'the LibreCAL data range (VNA sweep unknown)'
+    if f_max is not None and hi > f_max:
+        hi, how = f_max, how + f', up to the instrument limit {f_max / 1e9:g} GHz'
+    lo, hi = max(lo, data_lo), min(hi, data_hi)
+    if lo > hi:
+        lo, hi = data_lo, min(data_hi, f_max or data_hi)
+        how = 'the LibreCAL data range (the sweep is outside it)'
+    return lo, hi, how
+
+
+def residual_warnings(fits: dict, limit_db: float = WARN_RESIDUAL_DB) -> list[str]:
+    out = []
+    for kind in ('OPEN', 'SHORT'):
+        f = fits.get(kind)
+        if f is not None and f.residual_db > limit_db:
+            model = 'C0..C3 open' if kind == 'OPEN' else 'L0..L3 short'
+            out.append(f'{kind.lower()} fit worst error {f.residual_db:.1f} dB over {f.f_lo / 1e9:.3f}-'
+                       f'{f.f_hi / 1e9:.3f} GHz: the LibreCAL {kind.lower()} may not reduce to the VNA\'s {model} '
+                       'model in this band (a limit of the model, not of the fit); expect a less exact calibration')
+    return out
+
+
 def _si(coeffs, unit):
     """fF/GHz^n (or pH/GHz^n) -> F/Hz^n (H/Hz^n)."""
     return tuple(v * unit / (1e9 ** i) for i, v in enumerate(coeffs))
@@ -180,6 +219,9 @@ def kit_from_librecal(coeffs: dict, port: int = 1, f_lo=None, f_hi=None, thru_pa
     fits = {'OPEN': fo, 'SHORT': fs, 'LOAD': fl}
     note = (f'fit {fo.f_lo / 1e9:.3f}-{fo.f_hi / 1e9:.3f} GHz, worst error open {fo.residual_db:.1f} dB, '
             f'short {fs.residual_db:.1f} dB, load {fl.residual_db:.1f} dB')
+    warns = residual_warnings(fits)
+    if warns:
+        note += '; WARNING: ' + '; '.join(warns)
     name = f'LibreCAL port {port} (fitted)'
     thru_len = 0.0
     if thru_pair is not None:

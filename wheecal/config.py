@@ -25,9 +25,10 @@ DEFAULTS = {
     'settle_s': 3.0,               # wait after each VNA measurement
     'switch_settle_s': 0.5,        # wait after switching the LibreCAL
     'mode': 'auto',                # auto | guided
-    'fit_band': 'full',            # full | span: fit the LibreCAL data over its range or the VNA sweep
+    'fit_band': 'span',            # span | full: fit over the VNA sweep (default) or all the LibreCAL data
     'require_stable_temp': True,
     'kit_check': True,
+    'settings_version': 2,         # 2 (v0.1.1): fit_band default span
 }
 
 
@@ -51,6 +52,11 @@ def config_path(path: str | os.PathLike | None = None) -> Path:
     return Path(env) if env else config_dir() / 'config.json'
 
 
+def evidence_dir(path=None) -> Path:
+    """Where screenshots crops of the VNA's correction indicator are kept (next to the settings file)."""
+    return config_path(path).parent / 'indicator'
+
+
 def _valid(key: str, value) -> bool:
     d = DEFAULTS[key]
     if isinstance(d, bool) or isinstance(value, bool):
@@ -61,6 +67,8 @@ def _valid(key: str, value) -> bool:
 
 
 def _clean(data: dict) -> dict:
+    if data.get('settings_version', 1) < 2 and data.get('fit_band') == 'full':
+        data = dict(data, fit_band='span')       # v0.1.0 wrote its default 'full' into every file
     out = dict(DEFAULTS)
     for k, v in data.items():
         if k in DEFAULTS and _valid(k, v):

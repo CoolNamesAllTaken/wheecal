@@ -8,7 +8,8 @@
   "settle_s": 3.0,
   "switch_settle_s": 0.5,
   "mode": "auto",
-  "fit_band": "full",
+  "fit_band": "span",
   "require_stable_temp": true,
-  "kit_check": true
+  "kit_check": true,
+  "settings_version": 2
 }
