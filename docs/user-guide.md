@@ -48,7 +48,9 @@ The VNA keeps one user kit, so loading one kit replaces the other. Back up first
 - **Automatic:** wheecal sends the VNA's measure and apply commands.
 - **Guided:** wheecal switches the LibreCAL, then tells you which VNA button to press. At the end it checks the
   VNA's screen, as in automatic mode.
-- **settle s:** the wait after each measurement. Allow a few full sweeps; raise it for slow sweeps.
+- **settle s:** the shortest wait after each measurement. On an instrument that reports its sweep time (the
+  RSA5065N) wheecal waits at least 2 sweeps + 1 s after switching a standard and after each measurement, whatever
+  this says, so a slow sweep (many points, narrow IF bandwidth) is handled automatically.
 - **require stable LibreCAL temperature** and **check VNA kit = LibreCAL fit** are on by default.
 
 ### 3. Calibrate S11 (Open, Short, Load)
@@ -100,6 +102,8 @@ wheecal --host 192.0.2.10 --backup kit.json    # save the VNA user kit (192.0.2.
 wheecal --load-kit librecal                    # fit the LibreCAL standards and write them (host from settings)
 wheecal --verify librecal
 wheecal --calibrate                            # S11 Open/Short/Load (asks first)
+wheecal --calibrate --verify-standards         # then read |S11| of the LibreCAL open, short and load
+wheecal --verify-standards                     # just the check, on the current calibration
 wheecal --calibrate s21                        # 2-port through; same as --calibrate-thru
 wheecal --calibrate-thru --librecal-port 3 --through-port 4 --mode guided
 wheecal --discard-cal s11                      # discard the VNA's S11 calibration (asks first; never automatic)
@@ -110,6 +114,11 @@ Flags override the settings file for one run: `--driver`, `--host`, `--scpi-port
 port), `--librecal-port`, `--through-port`, `--mode`, `--settle`, `--fit-band`.
 
 ## After calibrating
+
+`--verify-standards` (S11, LibreCAL still on the test port) does the S11 check for you: it switches the LibreCAL
+to Open, Short and Load, waits until each is swept in, reads the corrected trace (`:TRACe1:DATA?` on the RSA5065N)
+and logs |S11| min/max/mean in dB. It passes when Open and Short read within 1 dB of 0 dB and Load below -15 dB
+(exit code 1 otherwise). Drivers that can't read the trace skip it.
 
 Check the calibration with something known:
 - **S11:** a load reads well below -30 dB, and an open or short sits on the edge of the Smith chart.

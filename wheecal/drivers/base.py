@@ -82,6 +82,17 @@ class VnaDriver(abc.ABC):
         """The sweep (Hz), read only, or None."""
         return None
 
+    def measurement_settle(self, min_s: float) -> float:
+        """Seconds to wait so a measurement reflects what the port sees now (after switching a standard, or after a
+        calibration step), never less than min_s. Default min_s; an instrument with slow sweeps scales it to its
+        sweep time."""
+        return min_s
+
+    def read_s11(self) -> list[complex]:
+        """The displayed S11 trace as complex reflection coefficients, one per point. Optional: drivers that can't
+        read the trace leave this as is (calflow.verify_standards then skips)."""
+        raise NotImplementedError(f'{self.TITLE} has no trace read in wheecal')
+
     def snapshot(self) -> tuple[bytes, str]:
         """(image bytes, file extension) of the screen."""
         raise ScpiError(f'{self.TITLE} has no screenshot support in wheecal')

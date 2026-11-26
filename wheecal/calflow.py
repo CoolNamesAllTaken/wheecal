@@ -28,9 +28,18 @@ correction on). When the driver reads the on-screen correction indicator (cal_in
   unknown            -> saved, could not verify: the operator checks the screen (ok, with a warning)
 The indicator crop is saved in opts.evidence_dir for debugging. Without an indicator, STATe? on = applied, off =
 could not verify.
+
+Waits: after switching the LibreCAL and after each measure step the flow waits vna.measurement_settle(floor), with
+opts.switch_settle_s / opts.settle_s as the floors. A driver whose instrument sweeps slowly scales the wait to its
+sweep time (RSA5065N: 2 sweeps + 1 s), so each standard is measured only once it is fully swept in.
+
+verify_standards (after an S11 calibration, LibreCAL still on the test port): steps the LibreCAL through
+OPEN/SHORT/LOAD, reads the corrected S11 trace and logs |S11| per standard. A good calibration reads OPEN and SHORT
+near 0 dB and LOAD well below -15 dB. Best effort: skipped when the driver can't read the trace.
 """
 from __future__ import annotations
 
+import math
 import threading
 import time
 from dataclasses import dataclass, field
@@ -142,7 +151,7 @@ def run_cal(vna, cal: LibreCAL, meas: str, opts: CalOptions, *, log=print, progr
 
         for n, step in enumerate(steps, start=2):
             log(f'— {step}: ' + set_librecal(cal, step, opts))
-            time.sleep(opts.switch_settle_s)
+            time.sleep(vna.measurement_settle(opts.switch_settle_s))    # the new standard fully swept in
             check()
             if opts.mode == 'auto':
                 log(f'  VNA: measuring {step} ...')
@@ -249,6 +258,62 @@ def verify(vna, meas: str, opts: CalOptions, res: CalResult, log=print) -> CalRe
                        '(it was left in place).')
     log(res.message)
     return res
+
+
+#: verify_standards pass limits: |mean| within OPEN_SHORT_TOL_DB of 0 dB for OPEN/SHORT, mean below LOAD_MAX_DB.
+OPEN_SHORT_TOL_DB = 1.0
+LOAD_MAX_DB = -15.0
+
+
+def _db(z: complex) -> float:
+    return 20 * math.log10(max(abs(z), 1e-12))
+
+
+def check_standard(step: str, mean_db: float) -> bool:
+    if step == 'LOAD':
+        return mean_db < LOAD_MAX_DB
+    return abs(mean_db) <= OPEN_SHORT_TOL_DB
+
+
+def verify_standards(vna, cal: LibreCAL, opts: CalOptions, log=print) -> dict | None:
+    """After an S11 calibration: put each standard on opts.librecal_port, wait until it is swept in, read S11 and
+    log |S11| dB min/max/mean. Returns {step: {'min', 'max', 'mean', 'points', 'ok'}} plus 'ok' (all passed), or
+    None when the driver can't read the trace. Releases the LibreCAL at the end."""
+    if not callable(getattr(vna, 'read_s11', None)):
+        log('Verify standards: skipped (this driver cannot read the S11 trace)')
+        return None
+    out, ports = {}, 4
+    try:
+        try:
+            ports = cal.identify()['ports']
+        except (LibreCALError, OSError, KeyError):
+            pass
+        for step in ('OPEN', 'SHORT', 'LOAD'):
+            log(f'Verify {step}: ' + set_librecal(cal, step, opts))
+            time.sleep(vna.measurement_settle(opts.switch_settle_s))
+            try:
+                trace = vna.read_s11()
+            except NotImplementedError:
+                log('Verify standards: skipped (this driver cannot read the S11 trace)')
+                return None
+            if not trace:
+                raise ValueError('the S11 trace is empty')
+            dbs = [_db(z) for z in trace]
+            st = {'min': min(dbs), 'max': max(dbs), 'mean': sum(dbs) / len(dbs), 'points': len(dbs)}
+            st['ok'] = check_standard(step, st['mean'])
+            out[step] = st
+            want = f'mean < {LOAD_MAX_DB:g} dB' if step == 'LOAD' else f'mean within {OPEN_SHORT_TOL_DB:g} dB of 0'
+            log(f"  |S11| {step}: min {st['min']:.2f}  max {st['max']:.2f}  mean {st['mean']:.2f} dB over "
+                f"{st['points']} points -> {'PASS' if st['ok'] else 'FAIL'} ({want})")
+        out['ok'] = all(out[s]['ok'] for s in ('OPEN', 'SHORT', 'LOAD'))
+        log(f"Verify standards: {'PASS' if out['ok'] else 'FAIL'}")
+        return out
+    finally:
+        try:
+            cal.release(ports)
+            log('LibreCAL: all ports NONE')
+        except (LibreCALError, OSError) as exc:
+            log(f'LibreCAL release failed: {exc}')
 
 
 def run_s11(vna, cal: LibreCAL, opts: CalOptions, **kw) -> CalResult:

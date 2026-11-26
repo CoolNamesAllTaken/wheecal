@@ -9,6 +9,7 @@ Examples (192.0.2.10 stands for your VNA's address)
   wheecal --device /dev/cu.usbmodem1101 --librecal-info
   wheecal --load-kit librecal                                  fit the LibreCAL standards and write that kit
   wheecal --calibrate --yes                                    S11 Open/Short/Load with the LibreCAL
+  wheecal --calibrate --verify-standards --yes                 same, then check |S11| of each standard
   wheecal --calibrate s21 --librecal-port 1 --through-port 2   2-port through (S21) calibration
   wheecal --calibrate-thru --mode guided                       same, you press the VNA's buttons
   wheecal --dry-run --mock-librecal --load-kit librecal --calibrate s21 --yes     full simulation
@@ -108,6 +109,9 @@ def build_parser(cfg: dict) -> argparse.ArgumentParser:
                          "never above the VNA's limit")
     ap.add_argument('--discard-cal', choices=('s11', 's21'),
                     help="abort / discard the VNA's calibration of that measurement (asks first)")
+    ap.add_argument('--verify-standards', action='store_true',
+                    help='after an S11 calibration (or on its own, with the LibreCAL on the test port): read the '
+                         'corrected S11 of the LibreCAL OPEN, SHORT and LOAD and check them')
     ap.add_argument('--no-kit-check', action='store_true', help='calibrate without reading the VNA kit back')
     ap.add_argument('--snapshot', metavar='FILE', help='save a VNA screenshot')
     ap.add_argument('--yes', action='store_true', help='do not ask before calibrating')
@@ -147,13 +151,16 @@ def main(argv=None) -> int:
 
     vna = cal = None
     try:
+        if a.verify_standards and meas not in (None, 'S11'):
+            raise ValueError('--verify-standards checks an S11 calibration (OPEN/SHORT/LOAD on one port)')
         driver = drivers.get(cfg['driver'])
-        need_vna = any((a.load_kit, a.verify, a.backup, a.restore, meas, a.snapshot, a.discard_cal))
+        need_vna = any((a.load_kit, a.verify, a.backup, a.restore, meas, a.snapshot, a.discard_cal,
+                        a.verify_standards))
         if need_vna:
             vna = driver.mock(meas=meas or 'S11') if a.dry_run else driver.connect(cfg['host'], cfg['scpi_port'])
             info = vna.require_mode()
             print(f"VNA {info['idn']} | {info['mode']} {info['meas']}{'  (DRY RUN: simulated)' if a.dry_run else ''}")
-        need_cal = a.librecal_info or meas or 'librecal' in (a.load_kit, a.verify)
+        need_cal = a.librecal_info or meas or a.verify_standards or 'librecal' in (a.load_kit, a.verify)
         if need_cal:
             if a.mock_librecal:
                 cal = LibreCAL.mock()
@@ -222,6 +229,15 @@ def main(argv=None) -> int:
                 print(f'To discard it: wheecal --discard-cal {meas.lower()}')
             if not res.ok:
                 return 1
+        if a.verify_standards:
+            if a.dry_run and a.mock_librecal:
+                vna.t.follow(cal.link, cfg['librecal_port'])     # simulated trace follows the simulated LibreCAL
+            vopts = calflow.CalOptions(librecal_port=cfg['librecal_port'], switch_settle_s=cfg['switch_settle_s'])
+            out = calflow.verify_standards(vna, cal, vopts, log=print)
+            if out is not None:
+                print('VERIFY', 'PASS' if out['ok'] else 'FAIL')
+                if not out['ok']:
+                    return 1
         if a.discard_cal:
             m = a.discard_cal.upper()
             if not vna.supports(m):
