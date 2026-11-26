@@ -158,6 +158,20 @@ class RSA5065N(VnaDriver):
         except (ScpiError, ValueError):
             return None
 
+    def sweep_points(self) -> int | None:
+        try:
+            return int(float(self.query(':SWEep:POINts?')))
+        except (ScpiError, ValueError):
+            return None
+
+    def sweep_freqs(self) -> list[float] | None:
+        """The sweep points in Hz: a linear sweep from span() with :SWEep:POINts? points, or None."""
+        sp, n = self.span(), self.sweep_points()
+        if sp is None or not n or n < 1:
+            return None
+        f0, f1 = sp
+        return [f0] if n == 1 else [f0 + i * (f1 - f0) / (n - 1) for i in range(n)]
+
     def sweep_time(self) -> float | None:
         """One sweep in seconds (:SWEep:TIME?), or None when it can't be read."""
         try:
@@ -315,7 +329,7 @@ class MockRSA5065N:
 
     def __init__(self, drop_every: int = 0, cal_state: str = '0', meas: str = 'S11', mode: str = 'VNA',
                  state_lies: bool = False, screen_badge: str | None = None, sweep_s: float = 0.0,
-                 trace: str = '(1.0,0.0)(0.99,-0.05)(0.98,-0.1)'):
+                 trace: str = '(1.0,0.0)(0.99,-0.05)(0.98,-0.1)', points: int = 3):
         self.log: list[str] = []
         self.kit = {'LENGth': {'OPEN': 0.01, 'SHOR': 0.01, 'LOAD': 0.0, 'THRU': 0.0},
                     'Z0': {t: 50.0 for t in ('OPEN', 'SHOR', 'LOAD', 'THRU')},
@@ -334,6 +348,7 @@ class MockRSA5065N:
         self.screen_badge = screen_badge     # None: from the cal state; none | on | interpolated | other | missing
         self.sweep_s = sweep_s               # :SWEep:TIME? (0: instant sweeps, so waits stay at their floors)
         self.trace = trace                   # :TRACe1:DATA? reply, or a callable returning it (see follow())
+        self.points = points                 # :SWEep:POINts?
 
     #: A corrected S11 reading per LibreCAL state (follow()): open/short near 0 dB, load near -40 dB.
     FOLLOW_GAMMA = {'OPEN': (1.0, 0.0), 'SHORT': (-0.998, 0.01), 'LOAD': (0.01, -0.002)}
@@ -343,6 +358,41 @@ class MockRSA5065N:
         def trace():
             re_, im = self.FOLLOW_GAMMA.get(librecal_link.ports[port - 1].split()[0], (0.3, 0.0))
             return ''.join(f'({re_:.6e},{im:.6e})' for _ in range(points))
+        self.trace = trace
+
+    #: follow_raw's error box (e00, e11, e01*e10): a plausible uncorrected test port.
+    RAW_BOX = (complex(0.08, -0.05), complex(0.12, 0.07), complex(0.62, -0.31))
+    #: follow_raw: what the port reads with no LibreCAL standard on it (NONE) or no LibreCAL at all (a DUT).
+    RAW_DUT = complex(0.2, -0.1)
+
+    def gamma_at(self, librecal_link, port: int, freqs) -> list[complex]:
+        """The true reflection a mock LibreCAL's `port` presents at freqs (its FACTORY data; a through's far port is
+        matched, so the through's S11/S22). RAW_DUT when there is no LibreCAL or the port is NONE."""
+        from ..hostcal import interp_complex
+        state = librecal_link.ports[port - 1].split() if librecal_link is not None else ['NONE']
+        if state[0] in ('OPEN', 'SHORT', 'LOAD'):
+            return interp_complex(librecal_link.coeffs[f'P{port}_{state[0]}'], freqs)
+        if state[0] == 'THROUGH':
+            other = int(state[1])
+            lo, hi = sorted((port, other))
+            rows = librecal_link.coeffs[f'P{lo}{hi}_THROUGH']
+            idx = 0 if port < other else 3
+            return interp_complex([(f, s[idx]) for f, s in rows], freqs)
+        return [self.RAW_DUT] * len(freqs)
+
+    def follow_raw(self, librecal_link=None, port: int = 1, box=None, points: int | None = None) -> None:
+        """Make :TRACe1:DATA? answer the UNCORRECTED reading of the mock LibreCAL's port (or of RAW_DUT without
+        one) through the error box (e00, e11, e01e10): m = e00 + e01e10*g / (1 - e11*g). For host-cal tests."""
+        if points is not None:
+            self.points = points
+
+        def trace():
+            e00, e11, t = box or self.RAW_BOX
+            n = self.points
+            f0, f1 = self.span['FREQ:STAR'], self.span['FREQ:STOP']
+            freqs = [f0] if n == 1 else [f0 + i * (f1 - f0) / (n - 1) for i in range(n)]
+            ms = [e00 + t * g / (1 - e11 * g) for g in self.gamma_at(librecal_link, port, freqs)]
+            return ''.join(f'({m.real:.12e},{m.imag:.12e})' for m in ms)
         self.trace = trace
 
     def screenshot(self) -> bytes:
@@ -430,6 +480,8 @@ class MockRSA5065N:
             return '0'
         if q in (':SWE:TIME', ':SWEEP:TIME'):
             return f'{self.sweep_s:.9e}'
+        if q in (':SWE:POIN', ':SWEEP:POINTS'):
+            return str(self.points)
         if q in (':TRAC1:DATA', ':TRACE1:DATA'):
             return self.trace() if callable(self.trace) else self.trace
         if q in (':SYST:ERR', ':SYSTEM:ERROR'):

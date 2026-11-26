@@ -57,6 +57,11 @@ def evidence_dir(path=None) -> Path:
     return config_path(path).parent / 'indicator'
 
 
+def hostcal_path(path=None) -> Path:
+    """The default host-side calibration (error terms) file, next to the settings file."""
+    return config_path(path).parent / 'hostcal.json'
+
+
 def _valid(key: str, value) -> bool:
     d = DEFAULTS[key]
     if isinstance(d, bool) or isinstance(value, bool):

@@ -11,6 +11,10 @@ VNAs that the LibreCAL can't drive directly:
 
   In **automatic** mode wheecal also sends the VNA's measure and apply commands. In **guided** mode it switches
   the LibreCAL and tells you which button to press on the VNA.
+- It calibrates S11 **on the host** (`--host-cal`, since 0.2.0). wheecal measures the LibreCAL standards raw, solves
+  the error terms against the LibreCAL's measured data, and writes corrected Touchstone (`.s1p`) files. This avoids
+  the kit-model error of the VNA's own calibration, and an independent check against the LibreCAL through confirms
+  it (`--host-cal-verify`). See [docs/host-calibration.md](docs/host-calibration.md).
 
 It has a GUI and a command line, and runs on macOS, Windows and Linux.
 
@@ -85,7 +89,9 @@ Settings are stored per user and created on the first run. They contain no instr
 - **Nothing runs on launch.** Every action is a button or a flag, and calibrations ask first (or need `--yes`).
 - **Limited writes.** wheecal only writes cal-kit fields and calibration steps. Each driver refuses anything else
   before it is sent. wheecal never changes span, points, IF bandwidth, source power, mode or measurement, never
-  presets, and never clears a calibration.
+  presets, and never clears a calibration on its own. The host-side calibration (`--host-cal`,
+  `--host-correct`, `--host-cal-verify`) needs raw readings, so it aborts the on-board S11 calibration: it asks
+  first (or needs `--yes`) and prints a warning.
 - **No automatic discard.** After Done, a calibration is left in place. wheecal checks it from the VNA's screen
   (the correction badge), because the RSA5065N's state query is unreliable. It is discarded (Abort) only when you
   cancel or an error occurs before Done, or when you ask: GUI **Abort / discard**, CLI `--discard-cal`.
@@ -100,6 +106,7 @@ Settings are stored per user and created on the first run. They contain no instr
 ## Documentation
 
 - [User guide](docs/user-guide.md): S11 and S21 step by step, automatic and guided mode, and the command line.
+- [Host-side S11 calibration](docs/host-calibration.md): why, how, and the independent check.
 - [Adding a VNA](docs/adding-a-vna.md)
 - [Building](docs/building.md): standalone app and releases.
 - [RSA5065N and LibreCAL command notes](docs/rsa5065n.md)
